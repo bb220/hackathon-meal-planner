@@ -321,19 +321,20 @@ class MealPlannerAgent:
         current_recipes = recipes
         
         async def display_current_recipes():
-            await self.send_message("\nAvailable recipes:")
+            recipe_display = "\nAvailable recipes:\n"
             for i, recipe in enumerate(current_recipes, 1):
                 servings_info = f"(Can be adjusted to {self.user_preferences.servings_per_meal} servings)"
                 cooking_time = f", {recipe.total_time} minutes" if recipe.total_time else ""
-                await self.send_message(f"\n{i}. {recipe.name} {servings_info}{cooking_time}")
-                await self.send_message(f"   Cuisine: {', '.join(recipe.cuisine_type) if recipe.cuisine_type else 'Not specified'}")
-                await self.send_message(f"   Link: {recipe.url}")
+                recipe_display += f"\n{i}. {recipe.name} {servings_info}{cooking_time}"
+                recipe_display += f"\n   Cuisine: {', '.join(recipe.cuisine_type) if recipe.cuisine_type else 'Not specified'}"
+                recipe_display += f"\n   Link: {recipe.url}\n"
+            await self.send_message(recipe_display)
 
         await display_current_recipes()
         selected_indices = set()
         
         # Send initial selection prompt
-        await self.send_message(f"""I see you need {needed_recipes} recipes for your cooking days: {', '.join(self.user_preferences.cooking_days)}.
+        selection_prompt = f"""I see you need {needed_recipes} recipes for your cooking days: {', '.join(self.user_preferences.cooking_days)}.
         
 You can:
 - Select recipes by their numbers or names
@@ -344,7 +345,8 @@ For example:
 - "Number 2 and 4 look good"
 - "Show me more chicken recipes"
 
-Which {needed_recipes} recipes would you like?""")
+Which {needed_recipes} recipes would you like?"""
+        await self.send_message(selection_prompt)
         
         while len(selected_indices) != needed_recipes:
             # Get user's response
@@ -484,7 +486,7 @@ Which {needed_recipes} recipes would you like?""")
         total_servings_needed = len(self.user_preferences.cooking_days) * self.user_preferences.servings_per_meal
         multipliers = calculate_optimal_servings_distribution(recipes, total_servings_needed)
         
-        # Format and send meal plan
+        # Format meal plan
         meal_plan = "\n=== Your Weekly Dinner Plan ===\n\n"
         
         # Map recipes to days
