@@ -1,53 +1,107 @@
-# AI Meal Planner
+# DinnerPlanner 🍽️
 
-An intelligent meal planning assistant that helps you plan your weekly meals and generate shopping lists.
+DinnerPlanner is an AI-powered meal planning assistant that helps you plan your weekly dinners and generate shopping lists. It features a modern web interface and intelligent conversation capabilities to understand your preferences and dietary requirements.
 
 ## Features
 
-- Interactive chat-based interface using OpenAI's Agent SDK
-- Collects user preferences for meals, dietary restrictions, and cooking availability
-- Integrates with Edamam Recipe API for recipe suggestions
-- Generates consolidated shopping lists
-- Handles recipe scaling based on needed meal portions
+- 🤖 AI-powered conversational interface
+- 📅 Weekly meal planning
+- 🥗 Dietary preference support
+- 📝 Automatic shopping list generation
+- 🔄 Recipe scaling for different serving sizes
+- 💬 Real-time chat interface
+- 🌐 Web-based responsive UI
 
-## Setup
+## Technology Stack
 
-1. Clone this repository
-2. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+### Backend
+- **FastAPI**: Modern, fast web framework for building APIs with Python
+- **WebSocket**: Real-time bidirectional communication
+- **OpenAI API**: GPT-powered conversation and recipe understanding
+- **Python 3.12**: Latest Python version with modern async features
+- **Uvicorn**: Lightning-fast ASGI server
+- **Pydantic**: Data validation using Python type annotations
+
+### Frontend
+- **HTML5/CSS3**: Modern, semantic markup and styling
+- **JavaScript**: Native WebSocket handling and UI interactions
+- **Inter Font**: Modern typography
+- **Responsive Design**: Mobile-first approach
+- **CSS Grid/Flexbox**: Modern layout system
+
+### DevOps
+- **Railway**: Production deployment platform
+- **Environment Management**: Python virtual environments
+- **Git**: Version control
+- **WSL2**: Windows Subsystem for Linux support
+
+## Getting Started
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/dinner-planner.git
+cd dinner-planner
+```
+
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
 3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Create a `.env` file with your API keys:
-   ```
-   OPENAI_API_KEY=your_openai_key
-   EDAMAM_APP_ID=your_edamam_app_id
-   EDAMAM_APP_KEY=your_edamam_app_key
-   ```
+```bash
+pip install -r requirements.txt
+```
+
+4. Set up your environment variables:
+```bash
+cp .env.example .env
+# Edit .env with your OpenAI API key
+```
+
+5. Run the development server:
+```bash
+uvicorn app:app --reload
+```
+
+6. Open http://localhost:8000 in your browser
 
 ## Project Structure
 
-- `agent.py` - Main agent implementation
-- `config.py` - Configuration and environment variable management
-- `tools/` - Custom tools and utilities
-  - `user_input.py` - User input collection tools
-  - `recipe.py` - Recipe API integration
-  - `shopping_list.py` - Shopping list generation utilities
-
-## Usage
-
-Run the meal planner:
-```bash
-python agent.py
+```
+dinner-planner/
+├── app.py              # FastAPI application entry point
+├── agent.py            # AI agent implementation
+├── config.py           # Configuration management
+├── static/             # Static files
+│   └── index.html      # Web interface
+├── tools/              # Helper modules
+│   ├── recipe.py       # Recipe handling
+│   ├── shopping_list.py# Shopping list generation
+│   └── user_input.py   # User preference management
+├── requirements.txt    # Python dependencies
+└── README.md          # This file
 ```
 
-Follow the interactive prompts to:
-1. Specify your dietary preferences and restrictions
-2. Indicate how many meals you need
-3. Choose your preferred cuisines
-4. Select from suggested recipes
-5. Get your consolidated shopping list 
+## Future Improvements
+
+- [ ] Implement user accounts and saved preferences
+- [ ] Implement grocery store integration
+- [ ] Add meal plan history and recipe favoriting
+- [ ] Create meal plan optimization based on nutritional goals
+- [ ] Create mobile app and voice clients
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- OpenAI for providing the GPT API
+- FastAPI team for the excellent framework
+- Railway for hosting support 
