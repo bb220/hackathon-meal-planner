@@ -221,18 +221,36 @@ class MealPlannerAgent:
     
     async def _search_recipes(self) -> List[Recipe]:
         """Search for recipes based on user preferences."""
-        # Build a search query based on preferences
-        query = " ".join(self.user_preferences.cuisine_preferences[:2])  # Use first two cuisine preferences
-        if not query:
-            query = "healthy"  # Default query if no cuisine preferences
-            
-        return self.recipe_api.search_recipes(
-            query=query,
-            diet=self.user_preferences.dietary_restrictions,
-            cuisine_type=self.user_preferences.cuisine_preferences,
-            meal_type=["lunch/dinner"],  # Default to dinner recipes
-            dish_type=["main course"]    # Focus on main dishes
-        )
+        all_recipes = []
+        
+        # If no cuisine preferences, do a single search with default query
+        if not self.user_preferences.cuisine_preferences:
+            return self.recipe_api.search_recipes(
+                query="healthy",  # Default query if no cuisine preferences
+                diet=self.user_preferences.dietary_restrictions,
+                meal_type=["lunch/dinner"],
+                dish_type=["main course"]
+            )
+        
+        # Search for each cuisine type separately
+        for cuisine in self.user_preferences.cuisine_preferences:
+            print(f"\nSearching for {cuisine} recipes...")
+            cuisine_recipes = self.recipe_api.search_recipes(
+                query=cuisine,  # Use cuisine type as the query
+                diet=self.user_preferences.dietary_restrictions,
+                cuisine_type=[cuisine],  # Search for this specific cuisine
+                meal_type=["lunch/dinner"],
+                dish_type=["main course"],
+                max_results=5  # Limit results per cuisine to ensure variety
+            )
+            all_recipes.extend(cuisine_recipes)
+        
+        # Shuffle the combined results to mix cuisines
+        import random
+        random.shuffle(all_recipes)
+        
+        # Return the combined results, limited to a reasonable number
+        return all_recipes[:10]  # Limit total results to 10 recipes
     
     async def _get_recipe_selections(self, recipes: List[Recipe]) -> List[Recipe]:
         """Present recipes to user and get their selections."""
@@ -240,39 +258,33 @@ class MealPlannerAgent:
             print("\nNo recipes found matching your criteria. Please try again with different preferences.")
             return []
 
+        # Calculate how many recipes we need based on cooking days
+        needed_recipes = len(self.user_preferences.cooking_days)
+        
         # Present recipes to user
-        print("\nHere are some recipes that match your preferences:")
+        print(f"\nHere are some recipes that match your preferences. Please select {needed_recipes} recipes (one for each cooking day):")
         for i, recipe in enumerate(recipes, 1):
-            servings_info = f"(Makes {recipe.servings} servings)"
+            servings_info = f"(Can be adjusted to {self.user_preferences.servings_per_meal} servings)"
             cooking_time = f", {recipe.total_time} minutes" if recipe.total_time else ""
             print(f"\n{i}. {recipe.name} {servings_info}{cooking_time}")
             print(f"   Cuisine: {', '.join(recipe.cuisine_type) if recipe.cuisine_type else 'Not specified'}")
             print(f"   Link: {recipe.url}")
 
         messages = [
-            {"role": "system", "content": """You are a helpful meal planning assistant.
-             Help the user select recipes from the list. Keep track of:
-             1. Total number of servings needed
-             2. Which recipes they've selected
-             3. Whether they have enough servings
-             
-             Be conversational but efficient. If they haven't selected enough servings,
-             suggest they select more recipes. If they've selected too many, let them know.
+            {"role": "system", "content": f"""You are a helpful meal planning assistant.
+             Help the user select exactly {needed_recipes} recipes from the list.
+             Keep track of how many they've selected and ensure they select the right number.
+             Be conversational but firm about needing exactly {needed_recipes} recipes.
              
              After the selection is complete, respond with a JSON summary of selected recipe indices."""},
-            {"role": "assistant", "content": f"""I see you need {self.user_preferences.meal_count} meals 
-             with {self.user_preferences.servings_per_meal} servings each, 
-             for a total of {self.user_preferences.meal_count * self.user_preferences.servings_per_meal} servings.
+            {"role": "assistant", "content": f"""I see you need {needed_recipes} recipes for your cooking days: {', '.join(self.user_preferences.cooking_days)}.
              
-             Please tell me which recipes you'd like to select by their numbers (1-{len(recipes)}).
+             Please tell me which {needed_recipes} recipes you'd like to select by their numbers (1-{len(recipes)}).
              You can list multiple numbers separated by commas."""}
         ]
 
         selected_indices = set()
-        total_servings = 0
-        needed_servings = self.user_preferences.meal_count * self.user_preferences.servings_per_meal
-
-        while total_servings < needed_servings:
+        while len(selected_indices) != needed_recipes:
             # Print assistant's message
             print("\nAssistant:", messages[-1]["content"])
             
@@ -282,11 +294,10 @@ class MealPlannerAgent:
             # Add user's response to messages
             messages.append({"role": "user", "content": user_response})
             
-            # Extract recipe indices from response
             try:
                 # Ask OpenAI to parse the response and extract recipe numbers
                 extraction_messages = [
-                    {"role": "system", "content": """Extract recipe numbers from the user's response.
+                    {"role": "system", "content": f"""Extract recipe numbers from the user's response.
                      Return a JSON array of integers representing the selected recipe indices.
                      Example: If user says "I'll take recipes 1, 3, and 5", return [1, 3, 5]"""},
                     {"role": "user", "content": user_response}
@@ -306,26 +317,27 @@ class MealPlannerAgent:
                 if not valid_indices:
                     raise ValueError("No valid recipe numbers found in response")
                 
-                # Add valid indices to selection
-                selected_indices.update(valid_indices)
+                # Update selected indices
+                selected_indices = valid_indices
                 
-                # Calculate total servings
-                total_servings = sum(recipes[i-1].servings for i in selected_indices)
-                
-                # Prepare next message based on servings status
-                if total_servings < needed_servings:
-                    remaining_servings = needed_servings - total_servings
+                # Check if we have the right number of recipes
+                if len(selected_indices) < needed_recipes:
+                    remaining = needed_recipes - len(selected_indices)
                     messages.append({
                         "role": "assistant",
-                        "content": f"""You've selected {len(selected_indices)} recipes providing {total_servings} servings.
-                         You still need {remaining_servings} more servings to meet your goal.
-                         Please select additional recipes."""
+                        "content": f"""You've selected {len(selected_indices)} recipes, but you need {needed_recipes} recipes.
+                         Please select {remaining} more recipe(s)."""
+                    })
+                elif len(selected_indices) > needed_recipes:
+                    messages.append({
+                        "role": "assistant",
+                        "content": f"""You've selected {len(selected_indices)} recipes, but you only need {needed_recipes} recipes.
+                         Please select exactly {needed_recipes} recipes."""
                     })
                 else:
                     messages.append({
                         "role": "assistant",
-                        "content": f"""Great! You've selected enough recipes to provide {total_servings} servings,
-                         which meets your need for {needed_servings} servings."""
+                        "content": f"""Perfect! You've selected {needed_recipes} recipes."""
                     })
                     print("\nAssistant:", messages[-1]["content"])
                     
@@ -333,7 +345,7 @@ class MealPlannerAgent:
                 print(f"\nError parsing selection: {e}")
                 messages.append({
                     "role": "assistant",
-                    "content": "I didn't understand that selection. Please enter recipe numbers (1-{len(recipes)}) separated by commas."
+                    "content": f"I didn't understand that selection. Please enter {needed_recipes} recipe numbers (1-{len(recipes)}) separated by commas."
                 })
 
         # Return selected recipes
@@ -343,9 +355,11 @@ class MealPlannerAgent:
         """Generate consolidated shopping list from selected recipes."""
         self.shopping_list.clear()
         
+        # Calculate servings needed for each recipe
+        servings_needed = self.user_preferences.servings_per_meal
+        
         for recipe in recipes:
-            # Calculate how many servings we need from this recipe
-            servings_needed = self.user_preferences.meal_count * self.user_preferences.servings_per_meal
+            # Calculate multiplier to adjust recipe servings
             multiplier = calculate_servings_multiplier(recipe, servings_needed)
             
             # Add recipe to shopping list with appropriate scaling
