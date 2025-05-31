@@ -50,24 +50,34 @@ class MealPlannerAgent:
         """Collect and validate user preferences through natural conversation."""
         messages = [
             {"role": "system", "content": """You are a helpful meal planning assistant. 
-             Collect the following information from the user in a conversational way:
+             Your task is to collect the following information in a friendly, conversational way:
              1. Number of meals they need for the week
              2. Cuisine preferences (Italian, Mexican, Asian, etc.)
              3. Any dietary restrictions (vegetarian, vegan, gluten-free, etc.)
              4. Days they're available to cook
              5. Number of servings per meal
              
-             Be friendly and conversational, but also efficient in collecting the information.
+             Start by welcoming them and asking about the number of meals.
+             Be friendly and conversational while efficiently collecting information.
              After collecting all information, summarize it and ask for confirmation.
-             When the user confirms, do not show a JSON summary or ask for further input.
-             Instead, just say "Great! Let me search for recipes that match your preferences..."
+             When the user confirms, respond ONLY with: "Great! Let me search for recipes that match your preferences..."
              """},
-            {"role": "user", "content": "I need help planning my meals for the week."}
+            {"role": "assistant", "content": "Hi! I'm here to help you plan your meals for the week. Let's start with how many meals you'd like to prepare. How many dinners would you like to plan?"}
         ]
         
         # Initialize preferences with default values
         preferences = None
+        
+        # Print the first message to start the conversation
+        print("\nAssistant:", messages[1]["content"])
+        
         while preferences is None:
+            # Get user's response
+            user_response = input("\nYou: ").strip()
+            
+            # Add user's response to messages
+            messages.append({"role": "user", "content": user_response})
+            
             # Get next message from OpenAI
             response = self.client.chat.completions.create(
                 model=settings.MODEL_NAME,
@@ -148,19 +158,8 @@ class MealPlannerAgent:
                     preferences = None
                 break  # Exit the loop if we got the transition message
             
-            # Get user's response
-            user_response = input("\nYou: ").strip()
-            
-            # Add messages to conversation
+            # Add assistant's message to conversation
             messages.append({"role": "assistant", "content": assistant_message})
-            messages.append({"role": "user", "content": user_response})
-            
-            # If user confirmed, instruct assistant to proceed to recipe search
-            if "yes" in user_response.lower() or "correct" in user_response.lower() or "looks good" in user_response.lower():
-                messages.append({
-                    "role": "system",
-                    "content": "The user has confirmed. Respond ONLY with: 'Great! Let me search for recipes that match your preferences...'"
-                })
         
         if preferences is None:
             raise ValueError("Failed to collect valid preferences")
