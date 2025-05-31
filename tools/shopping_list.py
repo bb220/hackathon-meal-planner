@@ -1,5 +1,31 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from tools.recipe import Recipe
+
+def calculate_optimal_servings_distribution(recipes: List[Recipe], total_servings_needed: int) -> List[float]:
+    """
+    Calculate optimal multipliers for each recipe to meet total servings needed with minimal excess.
+    
+    Args:
+        recipes: List of recipes to adjust
+        total_servings_needed: Total servings needed for the week
+        
+    Returns:
+        List of multipliers for each recipe
+    """
+    # Get base servings for each recipe
+    base_servings = [recipe.servings for recipe in recipes]
+    
+    # Calculate initial multipliers needed to meet servings per meal
+    initial_multipliers = [1.0 for _ in recipes]
+    total_servings = sum(s * m for s, m in zip(base_servings, initial_multipliers))
+    
+    # If we need more servings, scale up proportionally
+    if total_servings < total_servings_needed:
+        scale_factor = total_servings_needed / total_servings
+        return [m * scale_factor for m in initial_multipliers]
+    
+    # If we have too many servings, try to scale down while keeping reasonable portions
+    return initial_multipliers
 
 def calculate_servings_multiplier(recipe: Recipe, servings_needed: int) -> float:
     """Calculate the multiplier needed to scale recipe servings."""
@@ -52,7 +78,6 @@ class ShoppingList:
     
     def get_consolidated_list(self) -> List[Dict[str, str]]:
         """Get the consolidated shopping list."""
-        # Convert quantities to strings with reasonable precision
         shopping_list = []
         for item_data in self.items.values():
             quantity = item_data["quantity"]
