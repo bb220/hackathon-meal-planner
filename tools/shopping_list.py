@@ -1,67 +1,72 @@
-from typing import List, Dict
-from .recipe import Recipe
+from typing import List, Dict, Optional
+from tools.recipe import Recipe
+
+def calculate_servings_multiplier(recipe: Recipe, servings_needed: int) -> float:
+    """Calculate the multiplier needed to scale recipe servings."""
+    return servings_needed / recipe.servings
 
 class ShoppingList:
-    """Handles generation and management of shopping lists from recipes."""
+    """Class to manage shopping list generation."""
     
     def __init__(self):
-        self.items: Dict[str, Dict[str, float]] = {}  # food -> {measure -> quantity}
-        
-    def add_recipe(self, recipe: Recipe, servings_multiplier: float = 1.0):
-        """
-        Add a recipe's ingredients to the shopping list.
-        
-        Args:
-            recipe: Recipe object containing ingredients
-            servings_multiplier: Factor to multiply ingredient quantities by
-        """
-        for ingredient in recipe.ingredients:
-            food = ingredient["food"].lower()
-            measure = ingredient["measure"].lower()
-            quantity = float(ingredient["quantity"]) * servings_multiplier
-            
-            if food not in self.items:
-                self.items[food] = {}
-            
-            if measure in self.items[food]:
-                self.items[food][measure] += quantity
-            else:
-                self.items[food][measure] = quantity
+        self.items = {}  # Dictionary to store consolidated ingredients
     
-    def get_consolidated_list(self) -> List[Dict[str, str]]:
-        """
-        Get a consolidated list of all ingredients with their quantities.
-        
-        Returns:
-            List of dictionaries containing food items and their quantities
-        """
-        consolidated = []
-        for food, measures in self.items.items():
-            for measure, quantity in measures.items():
-                # Round to 2 decimal places for cleaner numbers
-                rounded_quantity = round(quantity, 2)
-                consolidated.append({
+    def add_recipe(self, recipe: Recipe, servings_multiplier: float = 1.0):
+        """Add a recipe's ingredients to the shopping list."""
+        for ingredient in recipe.ingredients:
+            # Convert ingredient to lowercase for consistent matching
+            food = ingredient.food.lower()
+            
+            # Calculate scaled quantity
+            try:
+                quantity = float(ingredient.quantity) * servings_multiplier
+            except (ValueError, TypeError):
+                # If quantity can't be converted to float, use original string
+                quantity = ingredient.quantity
+            
+            # Get measure and category
+            measure = ingredient.measure or "unit"
+            category = ingredient.foodCategory or "Other"
+            
+            # Create key for ingredient matching
+            key = (food, measure)
+            
+            if key in self.items:
+                # If quantity is numeric, add it
+                if isinstance(self.items[key]["quantity"], (int, float)) and isinstance(quantity, (int, float)):
+                    self.items[key]["quantity"] += quantity
+                else:
+                    # If either quantity is a string, concatenate with a note
+                    self.items[key]["quantity"] = f"{self.items[key]['quantity']} + {quantity}"
+            else:
+                self.items[key] = {
                     "food": food,
-                    "quantity": str(rounded_quantity),
-                    "measure": measure
-                })
-        
-        # Sort by food name for easier reading
-        return sorted(consolidated, key=lambda x: x["food"])
+                    "quantity": quantity,
+                    "measure": measure,
+                    "category": category
+                }
     
     def clear(self):
         """Clear the shopping list."""
-        self.items.clear()
-
-def calculate_servings_multiplier(recipe: Recipe, desired_servings: int) -> float:
-    """
-    Calculate the multiplier needed to scale a recipe to the desired number of servings.
+        self.items = {}
     
-    Args:
-        recipe: Recipe object
-        desired_servings: Number of servings needed
+    def get_consolidated_list(self) -> List[Dict[str, str]]:
+        """Get the consolidated shopping list."""
+        # Convert quantities to strings with reasonable precision
+        shopping_list = []
+        for item_data in self.items.values():
+            quantity = item_data["quantity"]
+            if isinstance(quantity, float):
+                # Round to 2 decimal places and remove trailing zeros
+                quantity_str = f"{quantity:.2f}".rstrip('0').rstrip('.')
+            else:
+                quantity_str = str(quantity)
+            
+            shopping_list.append({
+                "food": item_data["food"].title(),  # Capitalize food names
+                "quantity": quantity_str,
+                "measure": item_data["measure"],
+                "category": item_data["category"]
+            })
         
-    Returns:
-        Float multiplier to scale recipe quantities
-    """
-    return desired_servings / recipe.servings 
+        return sorted(shopping_list, key=lambda x: (x["category"], x["food"])) 
