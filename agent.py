@@ -1,12 +1,16 @@
 from typing import List, Dict, Any, Optional
-import openai
+from openai import AsyncOpenAI
 from config import settings
 from tools.user_input import UserPreferences
 from tools.recipe import RecipeAPI, Recipe
 from tools.shopping_list import ShoppingList, calculate_servings_multiplier, calculate_optimal_servings_distribution
+import asyncio
+import json
+import os
+import httpx
 
-# Configure OpenAI
-openai.api_key = settings.OPENAI_API_KEY
+# Set OpenAI API key in environment
+os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
 
 class MealPlannerAgent:
     """Main agent class for meal planning."""
@@ -15,8 +19,58 @@ class MealPlannerAgent:
         self.recipe_api = RecipeAPI()
         self.shopping_list = ShoppingList()
         self.user_preferences = None
-        self.client = openai.OpenAI()
         
+        # Create custom httpx client without proxy settings
+        http_client = httpx.AsyncClient(
+            base_url="https://api.openai.com/v1",
+            timeout=httpx.Timeout(60.0),
+            follow_redirects=True
+        )
+        
+        # Initialize OpenAI client with custom http client
+        self.client = AsyncOpenAI(
+            http_client=http_client,
+            api_key=settings.OPENAI_API_KEY
+        )
+        
+        self.websocket = None
+        self.user_input_queue = asyncio.Queue()
+        self._running = True
+        
+    async def __aenter__(self):
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.client.close()
+        if hasattr(self.client, 'http_client'):
+            await self.client.http_client.aclose()
+        
+    async def send_message(self, message: str, message_type: str = "assistant"):
+        """Send a message to the client."""
+        if self.websocket and self._running:
+            try:
+                await self.websocket.send_json({
+                    "type": message_type,
+                    "content": message
+                })
+            except Exception as e:
+                self._running = False
+                raise
+    
+    async def get_user_input(self, prompt: str = None) -> str:
+        """Get input from the user through websocket."""
+        if prompt:
+            await self.send_message(prompt)
+        
+        if not self._running:
+            raise asyncio.CancelledError("Agent is no longer running")
+            
+        try:
+            return await self.user_input_queue.get()
+        except Exception as e:
+            self._running = False
+            raise
+    
     async def run(self):
         """Main execution flow for the meal planning agent."""
         try:
@@ -24,26 +78,25 @@ class MealPlannerAgent:
             settings.validate_settings()
             
             # Step 1: Collect user preferences
-            print("\nCollecting your preferences...")
             self.user_preferences = await self._collect_user_preferences()
             
             # Step 2: Search for recipes
-            print("\nSearching for recipes that match your preferences...")
+            await self.send_message("Searching for recipes that match your preferences...")
             recipes = await self._search_recipes()
             
             # Step 3: Let user select recipes
-            print("\nFinding the best recipe matches...")
+            await self.send_message("Finding the best recipe matches...")
             selected_recipes = await self._get_recipe_selections(recipes)
             
             # Step 4: Generate shopping list
-            print("\nGenerating your shopping list...")
+            await self.send_message("Generating your shopping list...")
             shopping_list = await self._generate_shopping_list(selected_recipes)
             
             # Present results to user
             await self._present_results(selected_recipes, shopping_list)
             
         except Exception as e:
-            print(f"An error occurred: {str(e)}")
+            await self.send_message(f"An error occurred: {str(e)}", "error")
             raise
     
     async def _collect_user_preferences(self) -> UserPreferences:
@@ -68,26 +121,26 @@ class MealPlannerAgent:
         # Initialize preferences with default values
         preferences = None
         
-        # Print the first message to start the conversation
-        print("\nAssistant:", messages[1]["content"])
+        # Send the first message
+        await self.send_message(messages[1]["content"])
         
         while preferences is None:
             # Get user's response
-            user_response = input("\nYou: ").strip()
+            user_response = await self.get_user_input()
             
             # Add user's response to messages
             messages.append({"role": "user", "content": user_response})
             
             # Get next message from OpenAI
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=settings.MODEL_NAME,
                 messages=messages,
                 temperature=0.7
             )
             
-            # Print assistant's message
+            # Send assistant's message
             assistant_message = response.choices[0].message.content
-            print("\nAssistant:", assistant_message)
+            await self.send_message(assistant_message)
             
             # If this is the transition message, extract preferences
             if "search for recipes" in assistant_message.lower():
@@ -108,27 +161,17 @@ class MealPlannerAgent:
                      3. If no dietary restrictions, use empty array []
                      4. Convert "none" or "no restrictions" to empty array
                      5. Ensure all strings are properly quoted
-                     6. Use exact field names as shown
-                     
-                     Example:
-                     {
-                         "meal_count": 5,
-                         "dietary_restrictions": [],
-                         "cuisine_preferences": ["Italian", "Mexican"],
-                         "cooking_days": ["Monday", "Wednesday"],
-                         "servings_per_meal": 2
-                     }"""},
+                     6. Use exact field names as shown"""},
                     {"role": "user", "content": str(messages[:-2])}  # Exclude the last confirmation exchange
                 ]
                 
                 try:
-                    extraction_response = self.client.chat.completions.create(
+                    extraction_response = await self.client.chat.completions.create(
                         model=settings.MODEL_NAME,
                         messages=extraction_messages,
                         temperature=0
                     )
                     
-                    import json
                     extracted_text = extraction_response.choices[0].message.content.strip()
                     
                     # Find the JSON object in the response
@@ -145,16 +188,16 @@ class MealPlannerAgent:
                         
                         # Validate the extracted preferences
                         if not self._is_preferences_complete(preferences):
-                            print("\nI apologize, but I couldn't properly capture all your preferences. Let's try again.")
+                            await self.send_message("\nI apologize, but I couldn't properly capture all your preferences. Let's try again.")
                             preferences = None
                     else:
-                        print("\nI apologize, but I couldn't properly extract your preferences. Let's try again.")
+                        await self.send_message("\nI apologize, but I couldn't properly extract your preferences. Let's try again.")
                         preferences = None
                 except json.JSONDecodeError as e:
-                    print(f"\nError parsing preferences: {str(e)}")
+                    await self.send_message(f"\nError parsing preferences: {str(e)}")
                     preferences = None
                 except Exception as e:
-                    print(f"\nUnexpected error while extracting preferences: {str(e)}")
+                    await self.send_message(f"\nUnexpected error while extracting preferences: {str(e)}")
                     preferences = None
                 break  # Exit the loop if we got the transition message
             
@@ -181,7 +224,7 @@ class MealPlannerAgent:
             and preferences["servings_per_meal"] > 0
         )
     
-    def _extract_preferences(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    async def _extract_preferences(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         """Extract preferences from conversation history."""
         # Ask OpenAI to extract preferences from the conversation
         extraction_messages = [
@@ -198,14 +241,13 @@ class MealPlannerAgent:
             {"role": "user", "content": f"Extract preferences from this conversation:\n{str(messages)}"}
         ]
         
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=settings.MODEL_NAME,
             messages=extraction_messages,
             temperature=0
         )
         
         # Parse the response as JSON
-        import json
         try:
             preferences = json.loads(response.choices[0].message.content)
             return preferences
@@ -233,7 +275,7 @@ class MealPlannerAgent:
         
         # Search for each cuisine type separately
         for cuisine in self.user_preferences.cuisine_preferences:
-            print(f"\nSearching for {cuisine} recipes...")
+            await self.send_message(f"\nSearching for {cuisine} recipes...")
             cuisine_recipes = self.recipe_api.search_recipes(
                 query=cuisine,  # Use cuisine type as the query
                 diet=self.user_preferences.dietary_restrictions,
@@ -254,7 +296,7 @@ class MealPlannerAgent:
     async def _get_recipe_selections(self, recipes: List[Recipe]) -> List[Recipe]:
         """Present recipes to user and get their selections."""
         if not recipes:
-            print("\nNo recipes found matching your criteria. Please try again with different preferences.")
+            await self.send_message("\nNo recipes found matching your criteria. Please try again with different preferences.")
             return []
 
         # Calculate how many recipes we need based on cooking days
@@ -264,63 +306,35 @@ class MealPlannerAgent:
         all_recipes = recipes.copy()
         current_recipes = recipes
         
-        messages = [
-            {"role": "system", "content": f"""You are a helpful meal planning assistant.
-             The user needs to select exactly {needed_recipes} recipes from the numbered list above.
-             They can refer to recipes by their numbers or names.
-             
-             They can also ask to see more recipes with specific criteria, like:
-             - "Show me more chicken recipes"
-             - "Can I see more Italian dishes?"
-             - "I'd like to see more vegetarian options"
-             
-             Your task is to:
-             1. Determine if the user is requesting more recipes or making a selection
-             2. If selecting recipes:
-                - Extract the recipe numbers into a JSON array
-                - Keep track of how many they've selected
-                - Ensure they select exactly {needed_recipes} recipes
-             3. If requesting more recipes:
-                - Respond with "MORE_RECIPES: <search_term>"
-             
-             After successful selection, respond with ONLY a JSON array of the selected recipe numbers.
-             If they're requesting more recipes, respond with ONLY "MORE_RECIPES: <search_term>".
-             If the selection is unclear, respond with a clarifying question."""},
-            {"role": "assistant", "content": f"""I see you need {needed_recipes} recipes for your cooking days: {', '.join(self.user_preferences.cooking_days)}.
-             
-             You can:
-             - Select recipes by their numbers or names
-             - Ask to see more recipes with specific criteria
-             
-             For example:
-             - "I'd like the pasta recipe and the chicken curry"
-             - "Number 2 and 4 look good"
-             - "Show me more chicken recipes"
-             
-             Which {needed_recipes} recipes would you like?"""}
-        ]
-
-        def display_current_recipes():
-            print("\nAvailable recipes:")
+        async def display_current_recipes():
+            await self.send_message("\nAvailable recipes:")
             for i, recipe in enumerate(current_recipes, 1):
                 servings_info = f"(Can be adjusted to {self.user_preferences.servings_per_meal} servings)"
                 cooking_time = f", {recipe.total_time} minutes" if recipe.total_time else ""
-                print(f"\n{i}. {recipe.name} {servings_info}{cooking_time}")
-                print(f"   Cuisine: {', '.join(recipe.cuisine_type) if recipe.cuisine_type else 'Not specified'}")
-                print(f"   Link: {recipe.url}")
+                await self.send_message(f"\n{i}. {recipe.name} {servings_info}{cooking_time}")
+                await self.send_message(f"   Cuisine: {', '.join(recipe.cuisine_type) if recipe.cuisine_type else 'Not specified'}")
+                await self.send_message(f"   Link: {recipe.url}")
 
-        display_current_recipes()
+        await display_current_recipes()
         selected_indices = set()
         
+        # Send initial selection prompt
+        await self.send_message(f"""I see you need {needed_recipes} recipes for your cooking days: {', '.join(self.user_preferences.cooking_days)}.
+        
+You can:
+- Select recipes by their numbers or names
+- Ask to see more recipes with specific criteria
+
+For example:
+- "I'd like the pasta recipe and the chicken curry"
+- "Number 2 and 4 look good"
+- "Show me more chicken recipes"
+
+Which {needed_recipes} recipes would you like?""")
+        
         while len(selected_indices) != needed_recipes:
-            # Print assistant's message
-            print("\nAssistant:", messages[-1]["content"])
-            
             # Get user's response
-            user_response = input("\nYou: ").strip()
-            
-            # Add user's response to messages
-            messages.append({"role": "user", "content": user_response})
+            user_response = await self.get_user_input()
             
             try:
                 # Create a context message with recipe information
@@ -349,7 +363,7 @@ class MealPlannerAgent:
                     {"role": "user", "content": user_response}
                 ]
                 
-                response = self.client.chat.completions.create(
+                response = await self.client.chat.completions.create(
                     model=settings.MODEL_NAME,
                     messages=extraction_messages,
                     temperature=0
@@ -360,7 +374,7 @@ class MealPlannerAgent:
                 # Check if user is requesting more recipes
                 if result.startswith("MORE_RECIPES:"):
                     search_term = result.split(":", 1)[1].strip()
-                    print(f"\nSearching for more recipes with '{search_term}'...")
+                    await self.send_message(f"\nSearching for more recipes with '{search_term}'...")
                     
                     # Search for additional recipes
                     new_recipes = self.recipe_api.search_recipes(
@@ -378,17 +392,11 @@ class MealPlannerAgent:
                         # Update recipe lists
                         current_recipes = new_recipes
                         all_recipes.extend(new_recipes)
-                        display_current_recipes()
+                        await display_current_recipes()
                         
-                        messages.append({
-                            "role": "assistant",
-                            "content": f"Here are some additional recipes. Which would you like to select?"
-                        })
+                        await self.send_message("Here are some additional recipes. Which would you like to select?")
                     else:
-                        messages.append({
-                            "role": "assistant",
-                            "content": "I couldn't find any new recipes matching your criteria. Please select from the current options or try a different search."
-                        })
+                        await self.send_message("I couldn't find any new recipes matching your criteria. Please select from the current options or try a different search.")
                     continue
                 
                 # Handle recipe selection
@@ -402,14 +410,11 @@ class MealPlannerAgent:
                 valid_indices = {i for i in new_indices if 1 <= i <= len(current_recipes)}
                 
                 if not valid_indices:
-                    messages.append({
-                        "role": "assistant",
-                        "content": f"""I'm not sure which recipes you want. You can:
-                         - Select recipes by number or name
-                         - Ask to see more recipes with specific criteria
-                         
-                         Please select {needed_recipes} recipes or ask for more options."""
-                    })
+                    await self.send_message(f"""I'm not sure which recipes you want. You can:
+                     - Select recipes by number or name
+                     - Ask to see more recipes with specific criteria
+                     
+                     Please select {needed_recipes} recipes or ask for more options.""")
                     continue
                 
                 # Update selected indices
@@ -418,40 +423,27 @@ class MealPlannerAgent:
                 # Check if we have the right number of recipes
                 if len(selected_indices) < needed_recipes:
                     remaining = needed_recipes - len(selected_indices)
-                    messages.append({
-                        "role": "assistant",
-                        "content": f"""I understood you want: {', '.join(current_recipes[i-1].name for i in selected_indices)}.
-                         You still need to select {remaining} more recipe(s).
-                         You can:
-                         - Select from the current recipes
-                         - Ask to see more recipes with specific criteria"""
-                    })
+                    await self.send_message(f"""I understood you want: {', '.join(current_recipes[i-1].name for i in selected_indices)}.
+                     You still need to select {remaining} more recipe(s).
+                     You can:
+                     - Select from the current recipes
+                     - Ask to see more recipes with specific criteria""")
                 elif len(selected_indices) > needed_recipes:
-                    messages.append({
-                        "role": "assistant",
-                        "content": f"""I understood you want: {', '.join(current_recipes[i-1].name for i in selected_indices)}.
-                         However, you only need {needed_recipes} recipes.
-                         Please select exactly {needed_recipes} recipes."""
-                    })
+                    await self.send_message(f"""I understood you want: {', '.join(current_recipes[i-1].name for i in selected_indices)}.
+                     However, you only need {needed_recipes} recipes.
+                     Please select exactly {needed_recipes} recipes.""")
                 else:
-                    messages.append({
-                        "role": "assistant",
-                        "content": f"""Perfect! You've selected:
-                         {chr(10).join(f'- {current_recipes[i-1].name}' for i in selected_indices)}"""
-                    })
-                    print("\nAssistant:", messages[-1]["content"])
+                    await self.send_message(f"""Perfect! You've selected:
+                     {chr(10).join(f'- {current_recipes[i-1].name}' for i in selected_indices)}""")
                     
             except Exception as e:
-                print(f"\nError parsing selection: {e}")
-                messages.append({
-                    "role": "assistant",
-                    "content": f"""I didn't understand that. You can:
+                await self.send_message(f"\nError parsing selection: {e}")
+                await self.send_message(f"""I didn't understand that. You can:
                      - Select recipes by number (1-{len(current_recipes)})
                      - Select recipes by name
                      - Ask to see more recipes with specific criteria
                      
-                     Please select {needed_recipes} recipes or ask for more options."""
-                })
+                     Please select {needed_recipes} recipes or ask for more options.""")
 
         # Return selected recipes from the current set
         return [current_recipes[i-1] for i in selected_indices]
@@ -474,93 +466,95 @@ class MealPlannerAgent:
     
     async def _present_results(self, recipes: List[Recipe], shopping_list: List[Dict[str, str]]):
         """Present the final meal plan and shopping list to the user."""
-        print("\n=== Your Weekly Dinner Plan ===\n")
-        
         # Calculate total servings needed and actual servings
         total_servings_needed = len(self.user_preferences.cooking_days) * self.user_preferences.servings_per_meal
-        base_servings = sum(recipe.servings for recipe in recipes)
         multipliers = calculate_optimal_servings_distribution(recipes, total_servings_needed)
-        actual_servings = sum(recipe.servings * multiplier for recipe, multiplier in zip(recipes, multipliers))
         
-        # Map recipes to days based on user preferences
+        # Format and send meal plan
+        meal_plan = "\n=== Your Weekly Dinner Plan ===\n\n"
+        
+        # Map recipes to days
         available_days = self.user_preferences.cooking_days
         recipes_by_day = {}
         
         for day, recipe, multiplier in zip(available_days, recipes, multipliers):
             recipes_by_day[day] = (recipe, multiplier)
         
-        # Print recipes by day
+        # Format recipes by day
         for day in available_days:
-            print(f"\n{day}:")
+            meal_plan += f"\n{day}:\n"
             if day in recipes_by_day:
                 recipe, multiplier = recipes_by_day[day]
                 scaled_servings = int(recipe.servings * multiplier)
-                self._print_recipe_details(recipe, scaled_servings)
+                meal_plan += self._format_recipe_details(recipe, scaled_servings)
             else:
-                print("  • No recipe planned")
+                meal_plan += "  • No recipe planned\n"
         
-        # Print shopping list
-        print("\n=== Shopping List ===\n")
+        await self.send_message(meal_plan)
         
-        # Group items by food category
+        # Format and send shopping list
+        shopping_list_text = "\n=== Shopping List ===\n"
+        
+        # Group items by category
         categorized_items = {}
-        
         for item in shopping_list:
             category = item.get("category", "Other")
             if category not in categorized_items:
                 categorized_items[category] = []
             categorized_items[category].append(item)
         
-        # Print items by category
+        # Format items by category
         for category, items in sorted(categorized_items.items()):
-            print(f"\n{category}:")
+            shopping_list_text += f"\n{category}:\n"
             for item in items:
                 quantity = item.get("quantity", "")
                 measure = item.get("measure", "")
                 food = item.get("food", "")
-                print(f"  • {quantity} {measure} {food}".strip())
+                shopping_list_text += f"  • {quantity} {measure} {food}\n".strip() + "\n"
         
-        # Print summary
-        print(f"\nSummary:")
-        print(f"• Planned dinners: {len(recipes)}")
-        print(f"• Cooking days: {', '.join(available_days)}")
-        print(f"• Servings per meal: {self.user_preferences.servings_per_meal}")
+        await self.send_message(shopping_list_text)
+        
+        # Send summary
+        summary = f"\nSummary:\n"
+        summary += f"• Planned dinners: {len(recipes)}\n"
+        summary += f"• Cooking days: {', '.join(available_days)}\n"
+        summary += f"• Servings per meal: {self.user_preferences.servings_per_meal}\n"
         if self.user_preferences.dietary_restrictions:
-            print(f"• Dietary restrictions: {', '.join(self.user_preferences.dietary_restrictions)}")
+            summary += f"• Dietary restrictions: {', '.join(self.user_preferences.dietary_restrictions)}\n"
         
-        print("\nEnjoy your meals! 🍽️")
+        summary += "\nEnjoy your meals! 🍽️"
+        await self.send_message(summary)
     
-    def _print_recipe_details(self, recipe: Recipe, scaled_servings: Optional[int] = None):
-        """Helper method to print recipe details in a consistent format."""
-        # Basic recipe information
-        print(f"  • {recipe.name}")
+    def _format_recipe_details(self, recipe: Recipe, scaled_servings: Optional[int] = None) -> str:
+        """Format recipe details as a string."""
+        details = []
+        details.append(f"  • {recipe.name}")
+        
         if scaled_servings:
-            print(f"    Servings: {scaled_servings} (scaled from original {recipe.servings})")
+            details.append(f"    Servings: {scaled_servings} (scaled from original {recipe.servings})")
         else:
-            print(f"    Servings: {recipe.servings}")
+            details.append(f"    Servings: {recipe.servings}")
+        
         if recipe.total_time:
-            print(f"    Time: {recipe.total_time} minutes")
+            details.append(f"    Time: {recipe.total_time} minutes")
         
-        # Print cuisine type if available
         if recipe.cuisine_type:
-            print(f"    Cuisine: {', '.join(recipe.cuisine_type)}")
+            details.append(f"    Cuisine: {', '.join(recipe.cuisine_type)}")
         
-        # Print diet and health labels if available
         if recipe.diet_labels:
-            print(f"    Diet Labels: {', '.join(recipe.diet_labels)}")
+            details.append(f"    Diet Labels: {', '.join(recipe.diet_labels)}")
         if recipe.health_labels:
-            print(f"    Health Labels: {', '.join(recipe.health_labels[:3])}")  # Limit to top 3 health labels
+            details.append(f"    Health Labels: {', '.join(recipe.health_labels[:3])}")
         
-        # Print calories if available
         if recipe.calories:
             calories_per_serving = recipe.calories / recipe.servings
             if scaled_servings:
-                print(f"    Calories per serving: {int(calories_per_serving)} kcal (total: {int(calories_per_serving * scaled_servings)} kcal)")
+                details.append(f"    Calories per serving: {int(calories_per_serving)} kcal (total: {int(calories_per_serving * scaled_servings)} kcal)")
             else:
-                print(f"    Calories per serving: {int(calories_per_serving)} kcal")
+                details.append(f"    Calories per serving: {int(calories_per_serving)} kcal")
         
-        # Print recipe URL
-        print(f"    Recipe Link: {recipe.url}")
+        details.append(f"    Recipe Link: {recipe.url}")
+        return "\n".join(details) + "\n"
 
 if __name__ == "__main__":
     import asyncio
