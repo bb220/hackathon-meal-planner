@@ -149,11 +149,29 @@
         const clientId = Math.random().toString(36).substring(7);
         let ws;
 
+        function getWebSocketUrl() {
+            // Use wss:// for https:// pages, ws:// for http:// pages
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            
+            // Check if we're running locally (localhost or 127.0.0.1)
+            const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            
+            // For local development, always use localhost:8000
+            // For deployed environment, use the current host
+            const host = isLocalhost ? 'localhost:8000' : window.location.host;
+            
+            return `${protocol}//${host}/ws/${clientId}`;
+        }
+
         function connect() {
-            ws = new WebSocket(`ws://${window.location.host}/ws/${clientId}`);
+            const wsUrl = getWebSocketUrl();
+            console.log('Connecting to WebSocket:', wsUrl);
+            
+            ws = new WebSocket(wsUrl);
             
             ws.onopen = () => {
                 console.log('Connected to server');
+                document.getElementById('send-button').disabled = false;
                 // Start the conversation
                 ws.send(JSON.stringify({
                     type: 'start'
@@ -168,8 +186,14 @@
             
             ws.onclose = () => {
                 console.log('Disconnected from server');
+                document.getElementById('send-button').disabled = true;
                 // Try to reconnect after a delay
                 setTimeout(connect, 1000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                addMessage('Connection error. Retrying...', 'error');
             };
         }
 

@@ -8,9 +8,12 @@ import asyncio
 import json
 import os
 import httpx
+import logging
 
 # Set OpenAI API key in environment
 os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
+
+logger = logging.getLogger(__name__)
 
 class MealPlannerAgent:
     """Main agent class for meal planning."""
@@ -76,26 +79,37 @@ class MealPlannerAgent:
         try:
             # Validate environment
             settings.validate_settings()
+            logger.info("Environment settings validated")
             
             # Step 1: Collect user preferences
+            logger.info("Starting user preferences collection")
             self.user_preferences = await self._collect_user_preferences()
+            logger.info(f"Collected user preferences: {self.user_preferences}")
             
             # Step 2: Search for recipes
             await self.send_message("Searching for recipes that match your preferences...")
+            logger.info("Starting recipe search")
             recipes = await self._search_recipes()
+            logger.info(f"Found {len(recipes)} matching recipes")
             
             # Step 3: Let user select recipes
             await self.send_message("Finding the best recipe matches...")
+            logger.info("Starting recipe selection process")
             selected_recipes = await self._get_recipe_selections(recipes)
+            logger.info(f"User selected {len(selected_recipes)} recipes")
             
             # Step 4: Generate shopping list
             await self.send_message("Generating your shopping list...")
+            logger.info("Generating shopping list")
             shopping_list = await self._generate_shopping_list(selected_recipes)
+            logger.info("Shopping list generated")
             
             # Present results to user
+            logger.info("Presenting final results")
             await self._present_results(selected_recipes, shopping_list)
             
         except Exception as e:
+            logger.error(f"Error in meal planning session: {str(e)}", exc_info=True)
             await self.send_message(f"An error occurred: {str(e)}", "error")
             raise
     
